@@ -1,4 +1,4 @@
-from typing import Tuple
+from typing import Tuple, List
 import torch
 import torch.nn as nn
 
@@ -16,17 +16,25 @@ class AsymmetricLoss(nn.Module):
         neg_loss = (1 - target) * torch.log(1 - pred) * (pred ** self.gamma_neg)
         return -torch.mean(pos_loss + neg_loss)
 
-def compute_multitask_loss(outputs, labels, weights=(1.0, 0.0, 0.0, 0.0)) -> Tuple[torch.Tensor, Tuple[float, float, float, float]]:
+def compute_multitask_loss(outputs, labels, weights=(1.0, 0.3, 0.3)) -> Tuple[torch.Tensor, List[float]]:
     main_loss_fn = AsymmetricLoss()
-    return main_loss_fn(outputs['main'], labels['main']), (0.0, 0.0, 0.0, 0.0)
-    #aux_loss_fn = nn.MSELoss()
-    #aux_cls_loss_fn = nn.BCELoss()
+    aux_loss_fn = nn.MSELoss()
 
-    #loss_main = main_loss_fn(outputs['main'], labels['main'])
-    #loss_aux1 = aux_loss_fn(outputs['aux1'], labels['aux1'])
-    #loss_aux2 = aux_loss_fn(outputs['aux2'], labels['aux2'])
-    #loss_aux3 = aux_cls_loss_fn(outputs['aux3'], labels['aux3'])
+    has_aux1 = 'aux1' in outputs and 'aux1' in labels
+    has_aux2 = 'aux2' in outputs and 'aux2' in labels
 
-    #total_loss = (weights[0] * loss_main + weights[1] * loss_aux1 +
-    #              weights[2] * loss_aux2 + weights[3] * loss_aux3)
-    #return total_loss, (loss_main.item(), loss_aux1.item(), loss_aux2.item(), loss_aux3.item())
+    loss_main: torch.Tensor = main_loss_fn(outputs['main'], labels['main'])
+
+    loss = [loss_main.item()]
+    total_loss = weights[0] * loss_main
+
+    if has_aux1:
+        loss_aux1: torch.Tensor = aux_loss_fn(outputs['aux1'], labels['aux1'])
+        loss.append(loss_aux1.item())
+        total_loss += weights[1] * loss_aux1
+    if has_aux2:
+        loss_aux2: torch.Tensor = aux_loss_fn(outputs['aux2'], labels['aux2'])
+        loss.append(loss_aux2.item())
+        total_loss += weights[2] * loss_aux2
+
+    return total_loss, loss

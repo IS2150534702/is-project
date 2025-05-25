@@ -44,6 +44,7 @@ if __name__ == "__main__":
 
     try:
         while True:
+            print("ready.")
             text = sys.stdin.read()
             prob = predict(text, model)
             print(f"AI-generated probability: {prob:.4f}")

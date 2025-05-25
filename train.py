@@ -11,17 +11,16 @@ from sklearn.preprocessing import MinMaxScaler
 from modules import consts
 from modules.model import AuxiliaryDeberta
 from modules.loss import compute_multitask_loss
-from modules.dataset import MultiTaskDataset
-from modules.preprocess import preprocess
-from modules.utils import get_device
+from modules.dataset import TrainDataset
+from modules.preprocess import preprocess_for_train
+from modules.utils import get_device, str_to_dtype
 
 
 def preprocess_data(x, features_scaled: np.ndarray) -> Dict[str, float]:
     return {
         'main': float(x['label']),
         'aux1': float(features_scaled[x.name][0]),
-        'aux2': float(features_scaled[x.name][1]),
-        'aux3': 0.0 # float(x['aux3'])
+        'aux2': float(features_scaled[x.name][1])
     }
 
 # CSV 파일을 읽고, 정규화까지 처리하는 함수
@@ -49,7 +48,7 @@ def run_epoch(model: AuxiliaryDeberta, dataloader: DataLoader, optimizer: Option
         model.eval()
     total_loss = 0
 
-    for batch in dataloader:
+    for batch in tqdm.tqdm(dataloader, leave=False):
         input_ids = batch['input_ids'].to(device)
         attention_mask = batch['attention_mask'].to(device)
         labels = {k: v.to(device) for k, v in batch['labels'].items()}
@@ -74,7 +73,7 @@ if __name__ == "__main__":
     parser.add_argument("--train", type=str, default="train_dataset.csv", help="Path to train CSV file")
     parser.add_argument("--val", type=str, help="Path to validate CSV file", required=False)
     parser.add_argument("--epoch", type=int, help="Epoch", required=True)
-    parser.add_argument("--batch-size", type=int, default=1, help="Batch size")
+    parser.add_argument("--batch-size", type=int, default=2, help="Batch size")
     parser.add_argument("--dtype", type=str, default="fp32", help="DataType")
     args = parser.parse_args()
 
@@ -82,13 +81,7 @@ if __name__ == "__main__":
 
     # 디바이스 설정
     device = get_device()
-    dtype = torch.float32
-    if args.dtype == "fp32":
-        dtype = torch.float32
-    elif args.dtype == "fp16":
-        dtype = torch.float16
-    elif args.dtype == "bf16":
-        dtype = torch.bfloat16
+    dtype = str_to_dtype(args.dtype)
 
     if device.type == "cuda":
         torch.cuda.tunable.enable(True)
@@ -101,9 +94,9 @@ if __name__ == "__main__":
     # 훈련 데이터 전처리
     train_texts, train_labels = load_and_preprocess_data(args.train, scaler, fit_scaler=True)
     # 텍스트 전처리
-    train_encodings = preprocess(train_texts, train_labels, dtype=dtype)
+    train_encodings = preprocess_for_train(train_texts, train_labels, None, dtype)
     # Dataset 구성
-    train_dataset = MultiTaskDataset(train_encodings)
+    train_dataset = TrainDataset(train_encodings)
     # DataLoader 설정
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
 
@@ -120,26 +113,26 @@ if __name__ == "__main__":
     # 체크포인트 디렉토리 생성
     os.makedirs("checkpoints", exist_ok=True)
 
-    progress = tqdm.trange(args.epoch)
+    progress = tqdm.trange(args.epoch, desc=f"Epoch 0/{args.epoch}")
     if args.val is None:
         # 학습 루프
         progress.set_postfix(loss='?')
         for epoch in progress:
-            progress.set_description(f"Epoch {epoch}/{args.epoch}")
             loss = run_epoch(model_runtime, train_loader, optimizer)
+            progress.set_description(f"Epoch {epoch + 1}/{args.epoch}")
             progress.set_postfix(loss=loss)
             torch.save(model.state_dict(), f"checkpoints/model_epoch_{epoch}.pth")
     else:
         val_texts, val_labels = load_and_preprocess_data(args.val, scaler)
-        val_encodings = preprocess(val_texts, val_labels)
-        val_dataset = MultiTaskDataset(val_encodings)
+        val_encodings = preprocess_for_train(val_texts, val_labels, None, dtype)
+        val_dataset = TrainDataset(val_encodings)
         val_loader = DataLoader(val_dataset, batch_size=args.batch_size)
 
         # 학습 루프
         progress.set_postfix(train_loss='?', val_loss='?')
         for epoch in progress:
-            progress.set_description(f"Epoch {epoch}/{args.epoch}")
             train_loss = run_epoch(model_runtime, train_loader, optimizer)
             val_loss = run_epoch(model_runtime, val_loader)
+            progress.set_description(f"Epoch {epoch + 1}/{args.epoch}")
             progress.set_postfix(train_loss=train_loss, val_loss=val_loss)
             torch.save(model.state_dict(), f"checkpoints/model_epoch_{epoch}.pth")
