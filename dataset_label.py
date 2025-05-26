@@ -87,7 +87,7 @@ def add_sentiment(df: pd.DataFrame, dataloader: DataLoader, device: torch.device
 
             labels = torch.argmax(outputs, dim=1)
             scores = torch.max(outputs, dim=1).values
-            for j in range(len(batch['input_ids'])):
+            for j in range(input_ids.size(0)):
                 assert dataloader.batch_size is not None
                 df.loc[i * dataloader.batch_size + j, 'sentiment_label'] = labels[j].item()
                 df.loc[i * dataloader.batch_size + j, 'sentiment_score'] = scores[j].item()
@@ -96,7 +96,6 @@ def add_sentiment(df: pd.DataFrame, dataloader: DataLoader, device: torch.device
 
 # 예외처리
 def remove_outliers(series: pd.Series) -> bool:
-    # token_count = len(tokenizer(series['text']))
     token_count = len(tokenizer.encode(series['text'], add_special_tokens=True))
     if token_count > 768:
         return False
@@ -135,8 +134,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", type=str, required=True)
     parser.add_argument("--output", type=str, required=True)
-    parser.add_argument("--remove-outliers", type=bool, required=False, default=True,
-                        help="Remove outliers based on text length and content.")
+    parser.add_argument("--allow-outliers", action='store_true', default=False)
     parser.add_argument("--device", type=str, default=device_to_normalized_form(get_device()))
     parser.add_argument("--dtype", type=str, default="fp32")
     parser.add_argument("--sentiment-batch-size", type=int, default=512)
@@ -160,17 +158,15 @@ if __name__ == "__main__":
     df = pd.read_csv(args.input)
     if not TYPE_CHECKING:
         df = df.parallel_apply(extract_basic_features, axis=1)
+        if not args.allow_outliers:
+            df = df[df.parallel_apply(remove_outliers, axis=1)]
+            df = df.reset_index(drop=True)
         df = df.parallel_apply(extract_english_features, axis=1)
 
-    encodings = preprocess(df['text'].tolist(), TOKEN_LIMIT)
+    encodings = preprocess(sentiment_tokenizer, df['text'].tolist(), TOKEN_LIMIT)
     dataset = TestDataset(encodings)
     dataloader = DataLoader(dataset, batch_size=args.sentiment_batch_size, shuffle=False)
-
     df = add_sentiment(df, dataloader, device)
-
-    if not TYPE_CHECKING:
-        if args.remove_outliers:
-            df = df[df.parallel_apply(remove_outliers, axis=1)]
 
     df.to_csv(args.output, index=False)
     print(f">>> {args.output} 저장 완료")

@@ -5,8 +5,23 @@ MODEL_NAME = "microsoft/deberta-v3-large"
 tokenizer = DebertaV2Tokenizer.from_pretrained(MODEL_NAME, use_fast=True)
 
 # get csv file, 
-df = pd.read_csv("datasets/train/split/extended/train_set_ai_extended.csv")
-df2 = pd.read_csv("datasets/train/split/extended/train_set_human_extended.csv")
+train_basic_ai = pd.read_csv("datasets/train/split/basic/train_set_ai.csv")
+train_basic_human = pd.read_csv("datasets/train/split/basic/train_set_human.csv")
+
+print(f"train_set_ai.csv: {len(train_basic_ai)} rows")
+print(f"train_set_human.csv: {len(train_basic_human)} rows")
+
+train_extend_ai = pd.read_csv("datasets/train/split/extended/train_set_ai_extended.csv")
+train_extend_human = pd.read_csv("datasets/train/split/extended/train_set_human_extended.csv")
+
+print(f"train_set_ai_extended.csv: {len(train_extend_ai)} rows")
+print(f"train_set_human_extended.csv: {len(train_extend_human)} rows")
+
+test_set_ai = pd.read_csv("datasets/test/split/test_set_ai.csv")
+test_set_human = pd.read_csv("datasets/test/split/test_set_human.csv")
+print(f"test_set_ai.csv: {len(test_set_ai)} rows")
+print(f"test_set_human.csv: {len(test_set_human)} rows")
+
 
 # def count_tokens(text: str) -> int:
 #     return len(tokenizer.encode(text, add_special_tokens=True))
@@ -22,19 +37,4 @@ df2 = pd.read_csv("datasets/train/split/extended/train_set_human_extended.csv")
 # for i in range(len(ai_counts)):
 #     if ai_counts[i] > 768:
 #         print(f"Index {i} has token count {ai_counts[i]} which is greater than 768.")
-
-df3 = pd.read_csv("datasets/train/train_set_final.csv")
-df4 = pd.read_csv("datasets/test/test_set_final.csv")
-df5 = pd.read_csv("datasets/test/test_set_final_under_768.csv")
-
-ai_cnt = df5['label'] == 1
-human_cnt = df5['label'] == 0
-print(f"AI count: {ai_cnt.sum()}")
-print(f"Human count: {human_cnt.sum()}")
-
-print(len(df))
-print(len(df2))
-print(len(df3))
-print(len(df4))
-print(len(df5))
 

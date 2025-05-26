@@ -5,6 +5,7 @@ import tqdm
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
+from transformers import DebertaV2Tokenizer
 import pandas as pd
 from pandarallel import pandarallel
 from sklearn.preprocessing import MinMaxScaler
@@ -54,13 +55,15 @@ def run_epoch(model: AuxiliaryDeberta, dataloader: DataLoader, optimizer: Option
         labels = {k: v.to(device) for k, v in batch['labels'].items()}
 
         with torch.set_grad_enabled(is_train):
+            if is_train:
+                optimizer.zero_grad()
+
             outputs = model(input_ids=input_ids, attention_mask=attention_mask)
             loss, _ = compute_multitask_loss(outputs, labels)
 
             if is_train:
                 loss.backward()
                 optimizer.step()
-                optimizer.zero_grad()
 
         total_loss += loss.item()
 
@@ -91,10 +94,12 @@ if __name__ == "__main__":
     # 정규화 도구 생성
     scaler = MinMaxScaler()
 
+    tokenizer = DebertaV2Tokenizer.from_pretrained('microsoft/deberta-v3-large', use_fast=True)
+
     # 훈련 데이터 전처리
     train_texts, train_labels = load_and_preprocess_data(args.train, scaler, fit_scaler=True)
     # 텍스트 전처리
-    train_encodings = preprocess_for_train(train_texts, train_labels, None, dtype)
+    train_encodings = preprocess_for_train(tokenizer, train_texts, train_labels, None, dtype)
     # Dataset 구성
     train_dataset = TrainDataset(train_encodings)
     # DataLoader 설정
@@ -124,7 +129,7 @@ if __name__ == "__main__":
             torch.save(model.state_dict(), f"checkpoints/model_epoch_{epoch}.pth")
     else:
         val_texts, val_labels = load_and_preprocess_data(args.val, scaler)
-        val_encodings = preprocess_for_train(val_texts, val_labels, None, dtype)
+        val_encodings = preprocess_for_train(tokenizer, val_texts, val_labels, None, dtype)
         val_dataset = TrainDataset(val_encodings)
         val_loader = DataLoader(val_dataset, batch_size=args.batch_size)
 

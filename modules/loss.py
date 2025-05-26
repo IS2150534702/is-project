@@ -4,7 +4,7 @@ import torch.nn as nn
 
 # loss modify
 class AsymmetricLoss(nn.Module):
-    def __init__(self, gamma_pos=0.0, gamma_neg=0.0):
+    def __init__(self, gamma_pos=2.0, gamma_neg=0.5):
         super().__init__()
         self.gamma_pos = gamma_pos
         self.gamma_neg = gamma_neg

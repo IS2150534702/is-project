@@ -12,16 +12,16 @@ class AuxiliaryDeberta(nn.Module):
 
         self.front_block = nn.Sequential(
             nn.Linear(self.encoder.config.hidden_size, 256),
-            nn.GELU(approximate="tanh")
+            nn.GELU(approximate="tanh"),
+            nn.Dropout(self.encoder.config.pooler_dropout),
         )
         # Main Task: AI 여부 예측 (0~1 확률)
         self.main_block = nn.Sequential(
             nn.Linear(256, 128),
             nn.GELU(approximate="tanh"),
-            # dropout is not needed
-            #nn.Dropout(self.encoder.config.pooler_dropout),
+            nn.Dropout(self.encoder.config.pooler_dropout),
             nn.Linear(128, 1),
-            nn.Sigmoid()
+            nn.Sigmoid(),
         )
         # Auxiliary Task 1: func_word_count
         if auxiliary_tasks[0]:
@@ -29,7 +29,7 @@ class AuxiliaryDeberta(nn.Module):
                 nn.Linear(256, 128),
                 nn.GELU(approximate="tanh"),
                 nn.Dropout(self.encoder.config.pooler_dropout),
-                nn.Linear(128, 1)
+                nn.Linear(128, 1),
             )
         # Auxiliary Task 2: token_repetition_count
         if auxiliary_tasks[1]:
@@ -37,7 +37,7 @@ class AuxiliaryDeberta(nn.Module):
                 nn.Linear(256, 128),
                 nn.GELU(approximate="tanh"),
                 nn.Dropout(self.encoder.config.pooler_dropout),
-                nn.Linear(128, 1)
+                nn.Linear(128, 1),
             )
 
     def forward(self, input_ids, attention_mask):

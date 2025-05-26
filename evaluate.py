@@ -3,6 +3,7 @@ from typing import List, TYPE_CHECKING
 import pandas as pd
 import torch
 from torch.utils.data import DataLoader
+from transformers import DebertaV2Tokenizer
 import tqdm
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 from modules.preprocess import preprocess
@@ -14,7 +15,7 @@ from modules.utils import get_device, str_to_dtype
 # ----------------------------------------
 # 평가용 함수: 모델과 텍스트 리스트를 받아 예측값 리스트 반환
 # ----------------------------------------
-def predict_batch(model: AuxiliaryDeberta, dataloader: DataLoader, device: torch.device, threshold: float = 0.5) -> List[int]:
+def predict_batch(model: AuxiliaryDeberta, dataloader: DataLoader, device: torch.device, threshold: float) -> List[int]:
     preds = []
 
     with torch.no_grad():
@@ -35,8 +36,8 @@ def predict_batch(model: AuxiliaryDeberta, dataloader: DataLoader, device: torch
 # ----------------------------------------
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Evaluate AI Text Detection Model")
-    parser.add_argument("--model", type=str, default="checkpoints/model_epoch_12.pth", help="Path to model checkpoint")
-    parser.add_argument("--dataset", type=str, default="test_dataset.csv", help="Path to test CSV file")
+    parser.add_argument("--model", type=str, required=True, help="Path to model checkpoint")
+    parser.add_argument("--dataset", type=str, required=True, help="Path to test CSV file")
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--dtype", type=str, default="fp32")
     parser.add_argument("--threshold", type=float, default=0.5, help="Classification threshold (default=0.5)")
@@ -63,7 +64,9 @@ if __name__ == "__main__":
     df = pd.read_csv(args.dataset)
 
     labels = df['label'].tolist()
-    encodings = preprocess(df['text'].tolist(), None)
+
+    tokenizer = DebertaV2Tokenizer.from_pretrained('microsoft/deberta-v3-large', use_fast=True)
+    encodings = preprocess(tokenizer, df['text'].tolist(), None)
     dataset = TestDataset(encodings)
     dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False)
 
