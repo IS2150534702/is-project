@@ -9,14 +9,15 @@ class TrainDataset(Dataset):
         return len(self.encodings['input_ids'])
 
     def __getitem__(self, idx):
+        labels = {
+            'main': self.encodings['main'][idx],
+        }
+        for i in range(len(self.encodings['aux'])):
+            labels[f'aux{i}'] = self.encodings['aux'][i][idx]
         return {
             'input_ids': self.encodings['input_ids'][idx],
             'attention_mask': self.encodings['attention_mask'][idx],
-            'labels': {
-                'main': self.encodings['main'][idx],
-                'aux1': self.encodings['aux1'][idx],
-                'aux2': self.encodings['aux2'][idx]
-            }
+            'labels': labels,
         }
 
 class TestDataset(Dataset):

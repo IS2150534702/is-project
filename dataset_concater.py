@@ -13,7 +13,8 @@ df = pd.concat([human_df, ai_df], ignore_index=True)
 df = df[['text', 'label', 'func_word_count', 'token_repetition_count']].copy()
 df.rename(columns={
     'func_word_count': 'aux1',
-    'token_repetition_count': 'aux2'
+    'token_repetition_count': 'aux2',
+    'vocab_size': 'aux3'
 }, inplace=True)
 df = df.sample(frac=1).reset_index(drop=True)
 

@@ -53,8 +53,7 @@ if __name__ == "__main__":
         torch.cuda.tunable.set_filename("tunableop.csv")
 
     # 모델 불러오기
-    model = AuxiliaryDeberta()
-    model.load_state_dict(torch.load(args.model, map_location=device))
+    model = AuxiliaryDeberta.from_state_dict(torch.load(args.model, map_location=device))
     model = model.to(device=device, dtype=dtype)
     if device.type == "cuda" and not TYPE_CHECKING:
         model = torch.compile(model)
