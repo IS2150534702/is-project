@@ -5,6 +5,9 @@ import tqdm
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
+import torchao
+from torchao.quantization import quantize_
+from torchao.prototype.quantized_training import int8_mixed_precision_training, Int8MixedPrecisionTrainingConfig
 from transformers import DebertaV2Tokenizer
 import pandas as pd
 from pandarallel import pandarallel
@@ -40,7 +43,7 @@ def load_and_preprocess_data(path: os.PathLike, scaler: MinMaxScaler, fit_scaler
     return texts, labels
 
 # 모델이 한 번 훈련 혹은 검증을 수행하는 함수
-def run_epoch(model: AuxiliaryDeberta, dataloader: DataLoader, optimizer: Optional[torch.optim.Optimizer] = None, weights: List[float] = [1.0, *([0.0] * AuxiliaryDeberta.NUM_AUXILIARY_TASKS)]) -> float:
+def run_epoch(model: AuxiliaryDeberta, dataloader: DataLoader, optimizer: Optional[torch.optim.Optimizer] = None, weights: List[float] = [1.0, *([0.0] * AuxiliaryDeberta.NUM_AUXILIARY_TASKS)], accumulation_steps = 1) -> float:
     is_train = optimizer is not None
     if is_train:
         model.train()
@@ -48,21 +51,24 @@ def run_epoch(model: AuxiliaryDeberta, dataloader: DataLoader, optimizer: Option
         model.eval()
 
     total_loss = 0.0
-    for batch in tqdm.tqdm(dataloader, leave=False):
+    for i, batch in enumerate(tqdm.tqdm(dataloader, leave=False)):
         input_ids = batch['input_ids'].to(device)
         attention_mask = batch['attention_mask'].to(device)
         labels = {k: v.to(device) for k, v in batch['labels'].items()}
 
-        with torch.set_grad_enabled(is_train):
-            if is_train:
-                optimizer.zero_grad()
+        if is_train:
+            optimizer.zero_grad()
 
+        with torch.set_grad_enabled(is_train):
             outputs = model(input_ids=input_ids, attention_mask=attention_mask)
             loss, _ = compute_multitask_loss(outputs, labels, weights)
 
             if is_train:
+                loss = loss / accumulation_steps
                 loss.backward()
-                optimizer.step()
+                if (i + 1) % accumulation_steps == 0:
+                    optimizer.step()
+                    optimizer.zero_grad()
 
         total_loss += loss.item()
 
@@ -71,13 +77,18 @@ def run_epoch(model: AuxiliaryDeberta, dataloader: DataLoader, optimizer: Option
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Evaluate AI Text Detection Model")
-    parser.add_argument("--path", type=str, help="Path to checkpoint file", required=False)
+    parser.add_argument("--ckpt", type=str, help="Path to checkpoint file", required=False)
+    parser.add_argument("--prefix", type=str, required=False, default="model_epoch")
     parser.add_argument("--train", type=str, default="train_dataset.csv", help="Path to train CSV file")
     parser.add_argument("--val", type=str, help="Path to validate CSV file", required=False)
     parser.add_argument("--weights", type=str, required=False, default="1.0")
     parser.add_argument("--epoch", type=int, help="Epoch", required=True)
     parser.add_argument("--batch-size", type=int, default=2, help="Batch size")
+    parser.add_argument("--learning-rate", type=float, default=2e-5)
+    parser.add_argument("--accumulation-steps", type=int, default=1)
     parser.add_argument("--dtype", type=str, default="fp32", help="DataType")
+    parser.add_argument("--cudagraphs", action='store_true', default=False)
+    parser.add_argument("--quant", action='store_true', default=False)
     args = parser.parse_args()
 
     pandarallel.initialize(progress_bar=True, nb_workers=consts.PARALLELISM)
@@ -103,24 +114,38 @@ if __name__ == "__main__":
     # Dataset 구성
     train_dataset = TrainDataset(train_encodings)
     # DataLoader 설정
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, num_workers=consts.PARALLELISM, pin_memory=device.type == "cuda", shuffle=True)
 
     weights = [None if len(weight) == 0 else float(weight) for weight in args.weights.split(",")]
     for i in range(len(weights), AuxiliaryDeberta.NUM_AUXILIARY_TASKS + 1):
         weights.append(None)
+
     # 모델 및 옵티마이저 초기화
-    if args.path is None:
+    # check if flash-attn is installed
+    if args.ckpt is None:
         model = AuxiliaryDeberta(auxiliary_tasks=[weight is not None for weight in weights[1:]])
     else:
-        model = AuxiliaryDeberta.from_state_dict(torch.load(args.path, map_location=device))
-        for i, weight in enumerate(weights):
-            if weight is not None and not model.has_auxiliary_task(i):
+        model = AuxiliaryDeberta.from_pretrained(args.ckpt, device, dtype, False)
+        for i in range(1, len(weights)):
+            if weights[i] is not None and not model.has_auxiliary_task(i - 1):
                 raise ValueError(f"Checkpoint does not contain auxiliary task #{i}.")
-    model = model.to(device=device, dtype=dtype)
+
+    if args.quant:
+        config = Int8MixedPrecisionTrainingConfig(
+            output=True,
+            grad_input=True,
+            grad_weight=False,
+        )
+        quantize_(model, int8_mixed_precision_training())
+
     model_runtime = model
-    if device.type == "cuda" and not TYPE_CHECKING:
-        model_runtime = torch.compile(model)
-    optimizer = torch.optim.AdamW(model_runtime.parameters(), lr=2e-5)
+    if device.type == "cuda" and not args.quant and not TYPE_CHECKING:
+        backend = 'cudagraphs' if args.cudagraphs else 'inductor'
+        model_runtime = torch.compile(model, backend=backend)
+
+    optimizer = torch.optim.AdamW(model_runtime.parameters(), lr=args.learning_rate)
+    if args.quant:
+        optimizer = torchao.optim._AdamW(model_runtime.parameters(), lr=args.learning_rate)
 
     # 체크포인트 디렉토리 생성
     os.makedirs("checkpoints", exist_ok=True)
@@ -135,10 +160,10 @@ if __name__ == "__main__":
         # 학습 루프
         progress.set_postfix(loss='?')
         for epoch in progress:
-            loss = run_epoch(model_runtime, train_loader, optimizer, weights)
+            loss = run_epoch(model_runtime, train_loader, optimizer, weights, args.accumulation_steps)
             progress.set_description(f"Epoch {epoch + 1}/{args.epoch}")
             progress.set_postfix(loss=loss)
-            torch.save(model.state_dict(), f"checkpoints/model_epoch_{epoch}.pth")
+            torch.save(model.state_dict(), f"checkpoints/{args.prefix}{epoch}.pth")
     else:
         val_texts, val_labels = load_and_preprocess_data(args.val, scaler)
         val_encodings = preprocess_for_train(tokenizer, val_texts, val_labels, None, dtype)
@@ -148,8 +173,8 @@ if __name__ == "__main__":
         # 학습 루프
         progress.set_postfix(train_loss='?', val_loss='?')
         for epoch in progress:
-            train_loss = run_epoch(model_runtime, train_loader, optimizer)
+            train_loss = run_epoch(model_runtime, train_loader, optimizer, weights, args.accumulation_steps)
             val_loss = run_epoch(model_runtime, val_loader)
             progress.set_description(f"Epoch {epoch + 1}/{args.epoch}")
             progress.set_postfix(train_loss=train_loss, val_loss=val_loss)
-            torch.save(model.state_dict(), f"checkpoints/model_epoch_{epoch}.pth")
+            torch.save(model.state_dict(), f"checkpoints/{args.prefix}{epoch}.pth")

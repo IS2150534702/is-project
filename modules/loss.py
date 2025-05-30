@@ -17,7 +17,7 @@ class AsymmetricLoss(nn.Module):
         return -torch.mean(pos_loss + neg_loss)
 
 def compute_multitask_loss(outputs, labels, weights) -> Tuple[torch.Tensor, List[float]]:
-    main_loss_fn = AsymmetricLoss(2.0, 0.0)
+    main_loss_fn = AsymmetricLoss(2.0, 4.0) # ? 4.0
     aux_loss_fn = nn.MSELoss()
 
     loss_main: torch.Tensor = main_loss_fn(outputs['main'], labels['main'])

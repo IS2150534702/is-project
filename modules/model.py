@@ -1,14 +1,42 @@
+import os
+from typing import TYPE_CHECKING
+import torch
 import torch.nn as nn
 from transformers import DebertaV2Model
+from transformers.models.deberta_v2 import modeling_deberta_v2
+
+
+@torch.jit.script
+def make_log_bucket_position(relative_pos, bucket_size: int, max_position: int):
+    sign = torch.sign(relative_pos)
+    mid = bucket_size // 2
+    abs_pos = torch.where(
+        (relative_pos < mid) & (relative_pos > -mid),
+        torch.tensor(mid - 1, device=relative_pos.device).type_as(relative_pos),
+        torch.abs(relative_pos),
+    )
+    log_pos = (
+        torch.ceil(torch.log(abs_pos / mid) / torch.log(torch.tensor((max_position - 1) / mid, device=relative_pos.device)) * (mid - 1)) + mid
+    )
+    bucket_pos = torch.where(abs_pos <= mid, relative_pos.type_as(log_pos), log_pos * sign)
+    return bucket_pos
+modeling_deberta_v2.make_log_bucket_position = make_log_bucket_position
+
+
+@torch.jit.script
+def scaled_size_sqrt(query_layer: torch.Tensor, scale_factor: int):
+    return torch.sqrt(torch.tensor(query_layer.size(-1), device=query_layer.device, dtype=torch.float) * scale_factor)
+modeling_deberta_v2.scaled_size_sqrt = scaled_size_sqrt
 
 
 class AuxiliaryDeberta(nn.Module):
     NUM_AUXILIARY_TASKS = 2
 
-    def __init__(self, model_name = 'microsoft/deberta-v3-large', auxiliary_tasks = [False] * NUM_AUXILIARY_TASKS):
+    def __init__(self, state_dict = None, auxiliary_tasks = [False] * NUM_AUXILIARY_TASKS):
         super(AuxiliaryDeberta, self).__init__()
 
-        self.encoder = DebertaV2Model.from_pretrained(model_name)
+        self.encoder = DebertaV2Model.from_pretrained('microsoft/deberta-v3-large')
+
         self.front_block = nn.Sequential(
             nn.Linear(self.encoder.config.hidden_size, 256),
             nn.GELU(approximate="tanh"),
@@ -33,8 +61,12 @@ class AuxiliaryDeberta(nn.Module):
                 )
                 self.add_module(f'aux_block{i}', block)
 
+        if state_dict is not None:
+            self.load_state_dict(state_dict)
+
     @classmethod
-    def from_state_dict(cls, state_dict):
+    def from_pretrained(cls, path: os.PathLike, device: torch.device = torch.device("cpu"), dtype: torch.dtype = torch.float32, compile: bool = False):
+        state_dict = torch.load(path, map_location=device)
         auxiliary_tasks = [False] * cls.NUM_AUXILIARY_TASKS
         for key in state_dict.keys():
             for i in range(cls.NUM_AUXILIARY_TASKS):
@@ -42,8 +74,10 @@ class AuxiliaryDeberta(nn.Module):
                     continue
                 if key.startswith(f'aux_block{i}.'):
                     auxiliary_tasks[i] = True
-        model = cls(auxiliary_tasks=auxiliary_tasks)
-        model.load_state_dict(state_dict)
+        model = cls(state_dict, auxiliary_tasks)
+        model = model.to(device=device, dtype=dtype)
+        if compile and not TYPE_CHECKING:
+            model = torch.compile(model)
         return model
 
     def has_auxiliary_task(self, index: int) -> bool:
