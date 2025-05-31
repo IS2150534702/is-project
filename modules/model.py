@@ -64,6 +64,28 @@ class AuxiliaryDeberta(nn.Module):
         if state_dict is not None:
             self.load_state_dict(state_dict)
 
+    @property
+    def device(self) -> torch.device:
+        iter = self.parameters()
+        parameter = next(iter, None)
+        if parameter is None:
+            return torch.get_default_device()
+        for v in iter:
+            if v.device != parameter.device:
+                raise ValueError("Cannot determine device because parameters are on different devices.")
+        return parameter.device
+    
+    @property
+    def dtype(self) -> torch.dtype:
+        iter = self.parameters()
+        parameter = next(iter, None)
+        if parameter is None:
+            return torch.get_default_dtype()
+        for v in iter:
+            if v.dtype != parameter.dtype:
+                raise ValueError("Cannot determine dtype because parameters are of different dtypes.")
+        return parameter.dtype
+
     @classmethod
     def from_pretrained(cls, path: os.PathLike, device: torch.device = torch.device("cpu"), dtype: torch.dtype = torch.float32, compile: bool = False):
         state_dict = torch.load(path, map_location=device)

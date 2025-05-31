@@ -11,6 +11,7 @@ from torchao.prototype.quantized_training import int8_mixed_precision_training, 
 from transformers import DebertaV2Tokenizer
 import pandas as pd
 from pandarallel import pandarallel
+import matplotlib.pyplot as plt
 from sklearn.preprocessing import MinMaxScaler
 from modules import consts
 from modules.model import AuxiliaryDeberta
@@ -43,36 +44,45 @@ def load_and_preprocess_data(path: os.PathLike, scaler: MinMaxScaler, fit_scaler
     return texts, labels
 
 # 모델이 한 번 훈련 혹은 검증을 수행하는 함수
-def run_epoch(model: AuxiliaryDeberta, dataloader: DataLoader, optimizer: Optional[torch.optim.Optimizer] = None, weights: List[float] = [1.0, *([0.0] * AuxiliaryDeberta.NUM_AUXILIARY_TASKS)], accumulation_steps = 1) -> float:
+def run_epoch(model: AuxiliaryDeberta, dataloader: DataLoader, optimizer: Optional[torch.optim.Optimizer] = None, weights: List[float] = [1.0, *([0.0] * AuxiliaryDeberta.NUM_AUXILIARY_TASKS)], accumulation_steps = 1) -> Tuple[float, List[float]]:
     is_train = optimizer is not None
     if is_train:
         model.train()
     else:
         model.eval()
 
-    total_loss = 0.0
+    loss = torch.tensor([0.0, *([0.0] * AuxiliaryDeberta.NUM_AUXILIARY_TASKS)], dtype=torch.float64, device=model.device)
+    weights_tensor = torch.tensor(weights, dtype=model.dtype, device=model.device)
     for i, batch in enumerate(tqdm.tqdm(dataloader, leave=False)):
-        input_ids = batch['input_ids'].to(device)
-        attention_mask = batch['attention_mask'].to(device)
-        labels = {k: v.to(device) for k, v in batch['labels'].items()}
+        input_ids = batch['input_ids'].to(model.device)
+        attention_mask = batch['attention_mask'].to(model.device)
+        labels = {k: v.to(model.device) for k, v in batch['labels'].items()}
 
         if is_train:
             optimizer.zero_grad()
 
         with torch.set_grad_enabled(is_train):
             outputs = model(input_ids=input_ids, attention_mask=attention_mask)
-            loss, _ = compute_multitask_loss(outputs, labels, weights)
+            loss_per_tasks = compute_multitask_loss(outputs, labels)
+            loss_sum = loss_per_tasks @ weights_tensor
 
             if is_train:
-                loss = loss / accumulation_steps
-                loss.backward()
+                loss_sum = loss_sum / accumulation_steps
+                loss_sum.backward()
                 if (i + 1) % accumulation_steps == 0:
                     optimizer.step()
                     optimizer.zero_grad()
 
-        total_loss += loss.item()
+        loss += loss_per_tasks
 
-    return total_loss / len(dataloader)
+    total_loss = torch.sum(loss)
+    total_loss = total_loss.item()
+
+    loss = loss / len(dataloader)
+    loss = loss.detach().cpu()
+    loss = loss.tolist()
+
+    return total_loss / len(dataloader), loss
 
 
 if __name__ == "__main__":
@@ -89,6 +99,7 @@ if __name__ == "__main__":
     parser.add_argument("--dtype", type=str, default="fp32", help="DataType")
     parser.add_argument("--cudagraphs", action='store_true', default=False)
     parser.add_argument("--quant", action='store_true', default=False)
+    parser.add_argument("--save-loss", action='store_true', default=False)
     args = parser.parse_args()
 
     pandarallel.initialize(progress_bar=True, nb_workers=consts.PARALLELISM)
@@ -121,9 +132,9 @@ if __name__ == "__main__":
         weights.append(None)
 
     # 모델 및 옵티마이저 초기화
-    # check if flash-attn is installed
     if args.ckpt is None:
         model = AuxiliaryDeberta(auxiliary_tasks=[weight is not None for weight in weights[1:]])
+        model = model.to(device=device, dtype=dtype)
     else:
         model = AuxiliaryDeberta.from_pretrained(args.ckpt, device, dtype, False)
         for i in range(1, len(weights)):
@@ -153,16 +164,28 @@ if __name__ == "__main__":
     print(f"PyTorch: device={device}, dtype={dtype}")
     print(f"Auxiliary tasks enabled: {', '.join([f'aux{i}={weight}' for i, weight in enumerate(weights) if i != 0])}")
 
+    progress = tqdm.trange(args.epoch, desc=f"Epoch 0/{args.epoch}")
+    record_main = []
+    record_aux = [None if weights[i] is None else [] for i in range(AuxiliaryDeberta.NUM_AUXILIARY_TASKS)]
+
     weights = [0.0 if weight is None else weight for weight in weights]
 
-    progress = tqdm.trange(args.epoch, desc=f"Epoch 0/{args.epoch}")
     if args.val is None:
         # 학습 루프
         progress.set_postfix(loss='?')
         for epoch in progress:
-            loss = run_epoch(model_runtime, train_loader, optimizer, weights, args.accumulation_steps)
+            loss, loss_aux = run_epoch(model_runtime, train_loader, optimizer, weights, args.accumulation_steps)
+            record_main.append(loss)
+            for i, aux_loss in enumerate(loss_aux):
+                record = record_aux[i]
+                if record is None:
+                    continue
+                record.append(aux_loss)
             progress.set_description(f"Epoch {epoch + 1}/{args.epoch}")
-            progress.set_postfix(loss=loss)
+            postfix = {'loss': loss}
+            for i, aux_loss in enumerate(loss_aux):
+                postfix[f'aux{i}'] = aux_loss
+            progress.set_postfix(postfix)
             torch.save(model.state_dict(), f"checkpoints/{args.prefix}{epoch}.pth")
     else:
         val_texts, val_labels = load_and_preprocess_data(args.val, scaler)
@@ -173,8 +196,25 @@ if __name__ == "__main__":
         # 학습 루프
         progress.set_postfix(train_loss='?', val_loss='?')
         for epoch in progress:
-            train_loss = run_epoch(model_runtime, train_loader, optimizer, weights, args.accumulation_steps)
-            val_loss = run_epoch(model_runtime, val_loader)
+            train_loss, loss_aux = run_epoch(model_runtime, train_loader, optimizer, weights, args.accumulation_steps)
+            val_loss, _ = run_epoch(model_runtime, val_loader)
+            record_main.append(train_loss)
+            for i, aux_loss in enumerate(loss_aux):
+                record = record_aux[i]
+                if record is None:
+                    continue
+                record.append(aux_loss)
             progress.set_description(f"Epoch {epoch + 1}/{args.epoch}")
-            progress.set_postfix(train_loss=train_loss, val_loss=val_loss)
+            postfix = {'train_loss': train_loss, 'val_loss': val_loss}
+            for i, aux_loss in enumerate(loss_aux):
+                postfix[f'aux{i}'] = aux_loss
+            progress.set_postfix(postfix)
             torch.save(model.state_dict(), f"checkpoints/{args.prefix}{epoch}.pth")
+    print(record_main)
+    print(record_aux)
+    if args.save_loss:
+        plt.plot(record_main)
+        plt.xlabel('Epoch')
+        plt.ylabel('Loss')
+        plt.title('Training Loss')
+        plt.savefig(f"checkpoints/{args.prefix}_loss.png")

@@ -1,6 +1,8 @@
 **/__pycache__
 checkpoints
-datasets
+datasets/*
+!datasets/*.r
+!datasets/*.py
 deprecated
 
 tunableop.csv

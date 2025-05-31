@@ -11,7 +11,7 @@ from modules.evaluate import evaluate
 # ----------------------------------------
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Evaluate AI Text Detection Model")
-    parser.add_argument("--model", type=str, required=True, help="Path to model checkpoint")
+    parser.add_argument("--model", type=str, nargs='+', required=True, help="Path to model checkpoint")
     parser.add_argument("--dataset", type=str, required=True, help="Path to test CSV file")
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--dtype", type=str, default="fp32")
@@ -28,18 +28,22 @@ if __name__ == "__main__":
         torch.cuda.tunable.set_filename("tunableop.csv")
 
     df = pd.read_csv(args.dataset)
-    preds = evaluate(args.model, df, args.threshold, args.batch_size, device, dtype)
-    labels = df['label'].tolist()
+    for model in args.model:
+        preds = evaluate(model, df, args.threshold, args.batch_size, device, dtype)
+        labels = df['label'].tolist()
 
-    # 지표 계산
-    acc = accuracy_score(labels, preds)
-    prec = precision_score(labels, preds)
-    rec = recall_score(labels, preds)
-    f1 = f1_score(labels, preds)
+        # 지표 계산
+        acc = accuracy_score(labels, preds)
+        prec = precision_score(labels, preds)
+        rec = recall_score(labels, preds)
+        f1 = f1_score(labels, preds)
 
-    # 결과 출력
-    print(f"Evaluation Results (threshold={args.threshold}):")
-    print(f" - Accuracy : {acc:.4f}")
-    print(f" - Precision: {prec:.4f}")
-    print(f" - Recall   : {rec:.4f}")
-    print(f" - F1 Score : {f1:.4f}")
+        # 결과 출력
+        print(f"Model: {model}")
+        print(f"Evaluation Results (threshold={args.threshold})")
+        print(f" - Accuracy : {acc:.4f}")
+        print(f" - Precision: {prec:.4f}")
+        print(f" - Recall   : {rec:.4f}")
+        print(f" - F1 Score : {f1:.4f}")
+
+        torch.cuda.empty_cache()

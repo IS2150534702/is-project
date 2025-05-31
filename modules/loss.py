@@ -1,4 +1,4 @@
-from typing import Tuple, List
+from typing import Tuple
 import torch
 import torch.nn as nn
 
@@ -16,19 +16,15 @@ class AsymmetricLoss(nn.Module):
         neg_loss = (1 - target) * torch.log(1 - pred) * (pred ** self.gamma_neg)
         return -torch.mean(pos_loss + neg_loss)
 
-def compute_multitask_loss(outputs, labels, weights) -> Tuple[torch.Tensor, List[float]]:
+def compute_multitask_loss(outputs, labels) -> torch.Tensor:
     main_loss_fn = AsymmetricLoss(2.0, 4.0) # ? 4.0
     aux_loss_fn = nn.MSELoss()
 
-    loss_main: torch.Tensor = main_loss_fn(outputs['main'], labels['main'])
-
-    loss = [loss_main.item()]
-    total_loss = weights[0] * loss_main
+    loss_per_tasks = torch.zeros(1 + len(outputs['aux']), dtype=outputs['main'].dtype, device=outputs['main'].device)
+    loss_per_tasks[0] = main_loss_fn(outputs['main'], labels['main'])
     for i, aux in enumerate(outputs['aux']):
         if aux is None:
             continue
-        loss_aux: torch.Tensor = aux_loss_fn(aux, labels[f'aux{i}'])
-        loss.append(loss_aux.item())
-        total_loss += weights[i + 1] * loss_aux
+        loss_per_tasks[i] = aux_loss_fn(aux, labels[f'aux{i}'])
 
-    return total_loss, loss
+    return loss_per_tasks
