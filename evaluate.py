@@ -3,7 +3,7 @@ import pandas as pd
 import torch
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 from modules.utils import get_device, str_to_dtype
-from modules.evaluate import evaluate
+from modules.evaluate import make_dataset, evaluate
 
 
 # ----------------------------------------
@@ -28,9 +28,11 @@ if __name__ == "__main__":
         torch.cuda.tunable.set_filename("tunableop.csv")
 
     df = pd.read_csv(args.dataset)
+    labels = df['label'].tolist()
+    dataset = make_dataset(df)
+
     for model in args.model:
-        preds = evaluate(model, df, args.threshold, args.batch_size, device, dtype)
-        labels = df['label'].tolist()
+        preds = evaluate(model, dataset, args.threshold, args.batch_size, device, dtype)
 
         # 지표 계산
         acc = accuracy_score(labels, preds)

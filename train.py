@@ -64,7 +64,8 @@ def run_epoch(model: AuxiliaryDeberta, dataloader: DataLoader, optimizer: Option
         with torch.set_grad_enabled(is_train):
             outputs = model(input_ids=input_ids, attention_mask=attention_mask)
             loss_per_tasks = compute_multitask_loss(outputs, labels)
-            loss_sum = loss_per_tasks @ weights_tensor
+            weighted_loss = loss_per_tasks * weights_tensor
+            loss_sum = torch.sum(weighted_loss)
 
             if is_train:
                 loss_sum = loss_sum / accumulation_steps
@@ -73,16 +74,16 @@ def run_epoch(model: AuxiliaryDeberta, dataloader: DataLoader, optimizer: Option
                     optimizer.step()
                     optimizer.zero_grad()
 
-        loss += loss_per_tasks
+        loss += weighted_loss
 
     total_loss = torch.sum(loss)
-    total_loss = total_loss.item()
+    total_loss = total_loss.item() / len(dataloader)
 
     loss = loss / len(dataloader)
     loss = loss.detach().cpu()
     loss = loss.tolist()
 
-    return total_loss / len(dataloader), loss
+    return total_loss, loss
 
 
 if __name__ == "__main__":
@@ -165,8 +166,8 @@ if __name__ == "__main__":
     print(f"Auxiliary tasks enabled: {', '.join([f'aux{i}={weight}' for i, weight in enumerate(weights) if i != 0])}")
 
     progress = tqdm.trange(args.epoch, desc=f"Epoch 0/{args.epoch}")
-    record_main = []
-    record_aux = [None if weights[i] is None else [] for i in range(AuxiliaryDeberta.NUM_AUXILIARY_TASKS)]
+    record_total = []
+    record_per_tasks = [None if weight is None else [] for weight in weights]
 
     weights = [0.0 if weight is None else weight for weight in weights]
 
@@ -174,17 +175,17 @@ if __name__ == "__main__":
         # 학습 루프
         progress.set_postfix(loss='?')
         for epoch in progress:
-            loss, loss_aux = run_epoch(model_runtime, train_loader, optimizer, weights, args.accumulation_steps)
-            record_main.append(loss)
-            for i, aux_loss in enumerate(loss_aux):
-                record = record_aux[i]
+            loss, loss_per_tasks = run_epoch(model_runtime, train_loader, optimizer, weights, args.accumulation_steps)
+            record_total.append(loss)
+            postfix = {'loss': loss, 'main': loss_per_tasks[0]}
+            for i, aux_loss in enumerate(loss_per_tasks):
+                record = record_per_tasks[i]
                 if record is None:
                     continue
                 record.append(aux_loss)
+                if i != 0:
+                    postfix[f'aux{i}'] = aux_loss
             progress.set_description(f"Epoch {epoch + 1}/{args.epoch}")
-            postfix = {'loss': loss}
-            for i, aux_loss in enumerate(loss_aux):
-                postfix[f'aux{i}'] = aux_loss
             progress.set_postfix(postfix)
             torch.save(model.state_dict(), f"checkpoints/{args.prefix}{epoch}.pth")
     else:
@@ -196,24 +197,24 @@ if __name__ == "__main__":
         # 학습 루프
         progress.set_postfix(train_loss='?', val_loss='?')
         for epoch in progress:
-            train_loss, loss_aux = run_epoch(model_runtime, train_loader, optimizer, weights, args.accumulation_steps)
+            train_loss, loss_per_tasks = run_epoch(model_runtime, train_loader, optimizer, weights, args.accumulation_steps)
             val_loss, _ = run_epoch(model_runtime, val_loader)
-            record_main.append(train_loss)
-            for i, aux_loss in enumerate(loss_aux):
-                record = record_aux[i]
+            record_total.append(train_loss)
+            postfix = {'train_loss': train_loss, 'val_loss': val_loss, 'main': loss_per_tasks[0]}
+            for i, aux_loss in enumerate(loss_per_tasks):
+                record = record_per_tasks[i]
                 if record is None:
                     continue
                 record.append(aux_loss)
+                if i != 0:
+                    postfix[f'aux{i}'] = aux_loss
             progress.set_description(f"Epoch {epoch + 1}/{args.epoch}")
-            postfix = {'train_loss': train_loss, 'val_loss': val_loss}
-            for i, aux_loss in enumerate(loss_aux):
-                postfix[f'aux{i}'] = aux_loss
             progress.set_postfix(postfix)
             torch.save(model.state_dict(), f"checkpoints/{args.prefix}{epoch}.pth")
-    print(record_main)
-    print(record_aux)
+    print(record_total)
+    print(record_per_tasks)
     if args.save_loss:
-        plt.plot(record_main)
+        plt.plot(record_total)
         plt.xlabel('Epoch')
         plt.ylabel('Loss')
         plt.title('Training Loss')

@@ -1,4 +1,3 @@
-from typing import Tuple
 import torch
 import torch.nn as nn
 
@@ -25,6 +24,6 @@ def compute_multitask_loss(outputs, labels) -> torch.Tensor:
     for i, aux in enumerate(outputs['aux']):
         if aux is None:
             continue
-        loss_per_tasks[i] = aux_loss_fn(aux, labels[f'aux{i}'])
+        loss_per_tasks[i + 1] = aux_loss_fn(aux, labels[f'aux{i}'])
 
     return loss_per_tasks

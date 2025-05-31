@@ -74,7 +74,7 @@ class AuxiliaryDeberta(nn.Module):
             if v.device != parameter.device:
                 raise ValueError("Cannot determine device because parameters are on different devices.")
         return parameter.device
-    
+
     @property
     def dtype(self) -> torch.dtype:
         iter = self.parameters()
