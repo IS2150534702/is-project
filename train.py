@@ -188,7 +188,7 @@ if __name__ == "__main__":
                     postfix[f'aux{i}'] = aux_loss
             progress.set_description(f"Epoch {epoch + 1}/{args.epoch}")
             progress.set_postfix(postfix)
-            torch.save(model.state_dict(), f"checkpoints/{args.prefix}{epoch}.pth")
+            torch.save(model.state_dict(), f"checkpoints/{args.prefix}_epoch{epoch}.pth")
     else:
         val_texts, val_labels = load_and_preprocess_data(args.val, scaler)
         val_encodings = preprocess_for_train(tokenizer, val_texts, val_labels, None, dtype)
@@ -211,7 +211,7 @@ if __name__ == "__main__":
                     postfix[f'aux{i}'] = aux_loss
             progress.set_description(f"Epoch {epoch + 1}/{args.epoch}")
             progress.set_postfix(postfix)
-            torch.save(model.state_dict(), f"checkpoints/{args.prefix}{epoch}.pth")
+            torch.save(model.state_dict(), f"checkpoints/{args.prefix}_epoch{epoch}.pth")
     print(record_total)
     print(record_per_tasks)
     if args.save_loss:
