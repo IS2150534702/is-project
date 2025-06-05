@@ -2,9 +2,12 @@ torch==2.8.0
 torchao==0.12.0
 transformers==4.52.2
 scikit-learn==1.6.1
+scipy==1.14.1
 pandas==2.2.3
 pandarallel==1.6.5
 tqdm==4.67.1
 pqdm==0.2.0
 spacy==3.8.6
 datasets==3.6.0
+matplotlib==3.9.4
+statsmodels==0.14.4

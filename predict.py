@@ -2,16 +2,15 @@ import sys
 import argparse
 from typing import TYPE_CHECKING
 import torch
-from transformers import DebertaV2Tokenizer
-from modules.model import AuxiliaryDeberta
-from modules.utils import get_device
+from modules.model import MultiTaskDeberta
+from modules.utils import make_tokenizer, get_device
 
 
 # 전역 tokenizer (train 시와 동일한 사전 학습 모델 사용)
-tokenizer = DebertaV2Tokenizer.from_pretrained("microsoft/deberta-v3-large", use_fast=True)
+tokenizer = make_tokenizer()
 
 # 예측 함수: 외부에서 함수로도 호출 가능
-def predict(text: str, model: AuxiliaryDeberta) -> float:
+def predict(text: str, model: MultiTaskDeberta) -> float:
     # 토큰화
     inputs = tokenizer(text, return_tensors="pt")
     inputs = {k: v.to(device) for k, v in inputs.items()}
@@ -35,12 +34,11 @@ if __name__ == "__main__":
         torch.cuda.tunable.tuning_enable(True)
         torch.cuda.tunable.set_filename("tunableop.csv")
 
-    model = AuxiliaryDeberta()
-    model.load_state_dict(torch.load(args.model, map_location=device))
+    model = MultiTaskDeberta.from_pretrained(args.model, device)
     model = model.to(device)
-    if device.type == "cuda" and not TYPE_CHECKING:
-        model = torch.compile(model)
     model.eval()
+    if device.type == "cuda" and not TYPE_CHECKING:
+        model = model.to_compiled()
 
     try:
         while True:

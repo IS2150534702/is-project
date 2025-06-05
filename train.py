@@ -7,18 +7,17 @@ import torch
 from torch.utils.data import DataLoader
 import torchao
 from torchao.quantization import quantize_
-from torchao.prototype.quantized_training import int8_mixed_precision_training, Int8MixedPrecisionTrainingConfig
-from transformers import DebertaV2Tokenizer
+from torchao.prototype.quantized_training import Int8MixedPrecisionTrainingConfig
 import pandas as pd
 from pandarallel import pandarallel
 import matplotlib.pyplot as plt
 from sklearn.preprocessing import MinMaxScaler
 from modules import consts
-from modules.model import AuxiliaryDeberta
+from modules.model import MultiTaskDeberta
 from modules.loss import compute_multitask_loss
 from modules.dataset import TrainDataset
 from modules.preprocess import preprocess_for_train
-from modules.utils import get_device, str_to_dtype
+from modules.utils import make_tokenizer, device_to_normalized_form, get_device, str_to_dtype
 
 
 def preprocess_data(x, features_scaled: np.ndarray) -> Dict[str, Any]:
@@ -44,14 +43,14 @@ def load_and_preprocess_data(path: os.PathLike, scaler: MinMaxScaler, fit_scaler
     return texts, labels
 
 # 모델이 한 번 훈련 혹은 검증을 수행하는 함수
-def run_epoch(model: AuxiliaryDeberta, dataloader: DataLoader, optimizer: Optional[torch.optim.Optimizer] = None, weights: List[float] = [1.0, *([0.0] * AuxiliaryDeberta.NUM_AUXILIARY_TASKS)], accumulation_steps = 1) -> Tuple[float, List[float]]:
+def run_epoch(model: MultiTaskDeberta, dataloader: DataLoader, optimizer: Optional[torch.optim.Optimizer] = None, weights: List[float] = [1.0, *([0.0] * MultiTaskDeberta.NUM_AUXILIARY_TASKS)], accumulation_steps = 1) -> Tuple[float, List[float]]:
     is_train = optimizer is not None
     if is_train:
         model.train()
     else:
         model.eval()
 
-    loss = torch.tensor([0.0, *([0.0] * AuxiliaryDeberta.NUM_AUXILIARY_TASKS)], dtype=torch.float64, device=model.device)
+    loss = torch.tensor([0.0, *([0.0] * MultiTaskDeberta.NUM_AUXILIARY_TASKS)], dtype=torch.float64, device=model.device)
     weights_tensor = torch.tensor(weights, dtype=model.dtype, device=model.device)
     for i, batch in enumerate(tqdm.tqdm(dataloader, leave=False)):
         input_ids = batch['input_ids'].to(model.device)
@@ -97,8 +96,8 @@ if __name__ == "__main__":
     parser.add_argument("--batch-size", type=int, default=2, help="Batch size")
     parser.add_argument("--learning-rate", type=float, default=2e-5)
     parser.add_argument("--accumulation-steps", type=int, default=1)
+    parser.add_argument("--device", type=str, default=device_to_normalized_form(get_device()))
     parser.add_argument("--dtype", type=str, default="fp32", help="DataType")
-    parser.add_argument("--cudagraphs", action='store_true', default=False)
     parser.add_argument("--quant", action='store_true', default=False)
     parser.add_argument("--save-loss", action='store_true', default=False)
     args = parser.parse_args()
@@ -106,18 +105,21 @@ if __name__ == "__main__":
     pandarallel.initialize(progress_bar=True, nb_workers=consts.PARALLELISM)
 
     # 디바이스 설정
-    device = get_device()
+    device = torch.device(args.device)
     dtype = str_to_dtype(args.dtype)
 
     if device.type == "cuda":
         torch.cuda.tunable.enable(True)
         torch.cuda.tunable.tuning_enable(True)
         torch.cuda.tunable.set_filename("tunableop.csv")
+    elif device.type == "cpu":
+        torch.set_num_threads(consts.PARALLELISM)
+        torch.set_num_interop_threads(consts.PARALLELISM)
 
     # 정규화 도구 생성
     scaler = MinMaxScaler()
 
-    tokenizer = DebertaV2Tokenizer.from_pretrained('microsoft/deberta-v3-large', use_fast=True)
+    tokenizer = make_tokenizer()
 
     # 훈련 데이터 전처리
     train_texts, train_labels = load_and_preprocess_data(args.train, scaler, fit_scaler=True)
@@ -129,15 +131,15 @@ if __name__ == "__main__":
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, num_workers=consts.PARALLELISM, pin_memory=device.type == "cuda", shuffle=True)
 
     weights = [None if len(weight) == 0 else float(weight) for weight in args.weights.split(",")]
-    for i in range(len(weights), AuxiliaryDeberta.NUM_AUXILIARY_TASKS + 1):
+    for i in range(len(weights), MultiTaskDeberta.NUM_AUXILIARY_TASKS + 1):
         weights.append(None)
 
     # 모델 및 옵티마이저 초기화
     if args.ckpt is None:
-        model = AuxiliaryDeberta(auxiliary_tasks=[weight is not None for weight in weights[1:]])
+        model = MultiTaskDeberta(auxiliary_tasks=[weight is not None for weight in weights[1:]])
         model = model.to(device=device, dtype=dtype)
     else:
-        model = AuxiliaryDeberta.from_pretrained(args.ckpt, device, dtype, False)
+        model = MultiTaskDeberta.from_pretrained(args.ckpt, device, dtype)
         for i in range(1, len(weights)):
             if weights[i] is not None and not model.has_auxiliary_task(i - 1):
                 raise ValueError(f"Checkpoint does not contain auxiliary task #{i}.")
@@ -148,12 +150,11 @@ if __name__ == "__main__":
             grad_input=True,
             grad_weight=False,
         )
-        quantize_(model, int8_mixed_precision_training())
+        quantize_(model, config)
 
     model_runtime = model
     if device.type == "cuda" and not args.quant and not TYPE_CHECKING:
-        backend = 'cudagraphs' if args.cudagraphs else 'inductor'
-        model_runtime = torch.compile(model, backend=backend)
+        model_runtime = model.to_compiled()
 
     optimizer = torch.optim.AdamW(model_runtime.parameters(), lr=args.learning_rate)
     if args.quant:

@@ -2,6 +2,10 @@ import os
 from typing import TYPE_CHECKING
 import torch
 import torch.nn as nn
+try:
+    import intel_extension_for_pytorch as ipex
+except ImportError:
+    ipex = None
 from transformers import DebertaV2Model
 from transformers.models.deberta_v2 import modeling_deberta_v2
 
@@ -29,11 +33,11 @@ def scaled_size_sqrt(query_layer: torch.Tensor, scale_factor: int):
 modeling_deberta_v2.scaled_size_sqrt = scaled_size_sqrt
 
 
-class AuxiliaryDeberta(nn.Module):
+class MultiTaskDeberta(nn.Module):
     NUM_AUXILIARY_TASKS = 2
 
     def __init__(self, state_dict = None, auxiliary_tasks = [False] * NUM_AUXILIARY_TASKS):
-        super(AuxiliaryDeberta, self).__init__()
+        super(MultiTaskDeberta, self).__init__()
 
         self.encoder = DebertaV2Model.from_pretrained('microsoft/deberta-v3-large')
 
@@ -87,7 +91,7 @@ class AuxiliaryDeberta(nn.Module):
         return parameter.dtype
 
     @classmethod
-    def from_pretrained(cls, path: os.PathLike, device: torch.device = torch.device("cpu"), dtype: torch.dtype = torch.float32, compile: bool = False):
+    def from_pretrained(cls, path: os.PathLike, device: torch.device = torch.device("cpu"), dtype: torch.dtype = torch.float32):
         state_dict = torch.load(path, map_location=device)
         auxiliary_tasks = [False] * cls.NUM_AUXILIARY_TASKS
         for key in state_dict.keys():
@@ -98,9 +102,15 @@ class AuxiliaryDeberta(nn.Module):
                     auxiliary_tasks[i] = True
         model = cls(state_dict, auxiliary_tasks)
         model = model.to(device=device, dtype=dtype)
-        if compile and not TYPE_CHECKING:
-            model = torch.compile(model)
         return model
+
+    def to_compiled(self) -> 'MultiTaskDeberta':
+        if TYPE_CHECKING:
+            return self
+        if self.device.type == 'cpu' and ipex is not None:
+            model = ipex.optimize(self, dtype=self.dtype, weights_prepack=False)
+            return torch.compile(model, backend='ipex')
+        return torch.compile(self, backend='inductor')
 
     def has_auxiliary_task(self, index: int) -> bool:
         if not hasattr(self, f'aux_block{index}'):

@@ -1,13 +1,13 @@
 import os
-from typing import Union, List
+from typing import Union, List, Optional
 import tqdm
 import pandas as pd
 import torch
 from torch.utils.data import DataLoader
-from transformers import DebertaV2Tokenizer
 from modules.preprocess import preprocess
 from modules.dataset import TestDataset
-from modules.model import AuxiliaryDeberta
+from modules.model import MultiTaskDeberta
+from modules.utils import make_tokenizer
 
 
 def make_dataset(raw_data: Union[os.PathLike, pd.DataFrame]) -> TestDataset:
@@ -16,16 +16,17 @@ def make_dataset(raw_data: Union[os.PathLike, pd.DataFrame]) -> TestDataset:
     else:
         df = pd.read_csv(raw_data)
 
-    tokenizer = DebertaV2Tokenizer.from_pretrained('microsoft/deberta-v3-large', use_fast=True)
+    tokenizer = make_tokenizer()
     encodings = preprocess(tokenizer, df['text'].tolist(), None)
 
     return TestDataset(encodings)
 
 
-def evaluate(model_path: os.PathLike, raw_data: Union[os.PathLike, pd.DataFrame, TestDataset], threshold: float, batch_size: int, device: torch.device, dtype: torch.dtype):
+def evaluate(model_path: os.PathLike, raw_data: Union[os.PathLike, pd.DataFrame, TestDataset], threshold: Optional[float], batch_size: int, device: torch.device, dtype: torch.dtype):
     # 모델 불러오기
-    model = AuxiliaryDeberta.from_pretrained(model_path, device, dtype, device.type == "cuda")
+    model = MultiTaskDeberta.from_pretrained(model_path, device, dtype)
     model.eval()
+    model = model.to_compiled()
 
     # 데이터 불러오기
     if isinstance(raw_data, TestDataset):
@@ -41,8 +42,8 @@ def evaluate(model_path: os.PathLike, raw_data: Union[os.PathLike, pd.DataFrame,
 # ----------------------------------------
 # 평가용 함수: 모델과 텍스트 리스트를 받아 예측값 리스트 반환
 # ----------------------------------------
-def evaluate_impl(model: AuxiliaryDeberta, dataloader: DataLoader, device: torch.device, threshold: float) -> List[int]:
-    preds = []
+def evaluate_impl(model: MultiTaskDeberta, dataloader: DataLoader, device: torch.device, threshold: Optional[float]) -> List[Union[int, float]]:
+    results = []
 
     with torch.no_grad():
         for batch in tqdm.tqdm(dataloader):
@@ -52,7 +53,10 @@ def evaluate_impl(model: AuxiliaryDeberta, dataloader: DataLoader, device: torch
             output = model(input_ids=input_ids, attention_mask=attention_mask)
 
             for j in range(len(input_ids)):
-                pred = 1 if output['main'][j] >= threshold else 0
-                preds.append(pred)
+                if threshold is None:
+                    result = output['main'][j].item()
+                else:
+                    result = 1 if output['main'][j] >= threshold else 0
+                results.append(result)
 
-    return preds
+    return results

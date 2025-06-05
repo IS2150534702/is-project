@@ -3,8 +3,8 @@ library(readr)
 
 # 전처리 작업 및 라벨링을 마친 데이터셋 불러오기
 # show_col_types = FALSE로 지정함으로써 각 열의 자료형은 표시 X
-human_train <- read_csv("C:/Users/SangHyeonPark/Downloads/train_set_human_extended.csv", show_col_types = FALSE)
-ai_train <- read_csv("C:/Users/SangHyeonPark/Downloads/train_set_ai_extended.csv", show_col_types = FALSE)
+human_train <- read_csv("./train/split/extended/train_set_human_extended.csv", show_col_types = FALSE)
+ai_train <- read_csv("./train/split/extended/train_set_ai_extended.csv", show_col_types = FALSE)
 View(human_train)
 View(ai_train)
 

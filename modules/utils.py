@@ -1,5 +1,9 @@
 import torch
+from transformers import DebertaV2Tokenizer
 
+
+def make_tokenizer() -> DebertaV2Tokenizer:
+    return DebertaV2Tokenizer.from_pretrained("microsoft/deberta-v3-large", use_fast=True)
 
 def get_device() -> torch.device:
     if torch.cuda.is_available():
